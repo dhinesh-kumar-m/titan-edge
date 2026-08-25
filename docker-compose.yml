@@ -1,0 +1,44 @@
+# The shared front door. One per Titan server, started once by hand and left
+# running - not part of any per-stream create/destroy flow.
+#
+#   docker compose up -d
+#
+# It serves every stream's HLS files and the test player on port 80. Stream
+# containers come and go underneath it without this being touched, because a
+# stream's key is the name of its directory under /srv/live-flow/streams.
+
+services:
+  edge:
+    image: nginx:1.27-alpine
+    container_name: live-flow-edge
+    restart: unless-stopped
+
+    # Host networking for the same reason the stream containers use it: Docker
+    # on this server runs with iptables disabled so it cannot disturb the
+    # Firecracker VMs, and published ports need Docker to write NAT rules.
+    network_mode: host
+
+    volumes:
+      - ./docker/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./docker/player.html:/usr/share/nginx/player/index.html:ro
+      - ./docker/landing.html:/usr/share/nginx/landing/index.html:ro
+      - ./docker/stats.html:/usr/share/nginx/stats/index.html:ro
+      # Read only: this server should never be able to alter a recording.
+      - ${STREAMS_ROOT:-/srv/live-flow/streams}:/srv/streams:ro
+      # Written by dashboard.py on a timer, read here. Read only for the same
+      # reason as the streams directory - this container never needs to write
+      # anything.
+      - ${STATUS_DIR:-/srv/live-flow/status}:/usr/share/nginx/status:ro
+
+    # nginx is told to allow 4096 connections per worker, which it cannot
+    # honour while the container is limited to 1024 open files.
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
+
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1/player/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3

@@ -1,0 +1,316 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Live Flow - Capacity Over Time</title>
+<style>
+  :root {
+    --bg: #0f1115; --panel: #171a21; --line: #262b36;
+    --text: #e6e9ef; --muted: #9aa3b2; --muted2: #6b7280;
+    --ok: #4ade80; --warn: #fbbf24; --bad: #f87171;
+    --c1: #60a5fa; --c2: #a78bfa; --c3: #f472b6; --c4: #fb923c;
+    --c5: #fbbf24; --c6: #f87171; --c7: #34d399; --c8: #22d3ee; --c9: #818cf8;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    padding: 32px 20px 60px;
+  }
+  .wrap { max-width: 1080px; margin: 0 auto; }
+  .top { display: flex; justify-content: space-between; align-items: flex-start; flex-wrap: wrap; gap: 12px; margin-bottom: 22px; }
+  .crumb { font-size: 13px; margin-bottom: 8px; }
+  .crumb a { color: var(--muted); text-decoration: none; }
+  .crumb a:hover { color: var(--text); text-decoration: underline; }
+  .crumb .sep { color: var(--muted2); margin: 0 6px; }
+  .crumb .here { color: var(--muted); }
+  h1 { font-size: 24px; margin: 0; font-weight: 600; }
+  .pill { display: inline-flex; align-items: center; gap: 7px; padding: 7px 14px; border-radius: 999px;
+          font-size: 13px; font-weight: 600; border: 1px solid var(--line); background: var(--panel); }
+  .pill .dot { width: 8px; height: 8px; border-radius: 50%; }
+  .pill.ok .dot { background: var(--ok); box-shadow: 0 0 0 3px rgba(74,222,128,.15); }
+  .pill.warn .dot { background: var(--warn); box-shadow: 0 0 0 3px rgba(251,191,36,.15); }
+  .pill.bad .dot { background: var(--bad); box-shadow: 0 0 0 3px rgba(248,113,113,.15); }
+
+  .kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 12px; margin-bottom: 24px; }
+  .kpi { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; }
+  .kpi .label { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .04em; margin-bottom: 4px; }
+  .kpi .value { font-size: 22px; font-weight: 700; }
+  .kpi .value small { font-size: 13px; color: var(--muted); font-weight: 400; }
+  .kpi .sub { font-size: 12px; color: var(--muted); margin-top: 3px; }
+
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(420px, 1fr)); gap: 14px; }
+  .chart { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 18px 20px; }
+  .chart .head { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 2px; }
+  .chart h2 { font-size: 14px; font-weight: 600; margin: 0; }
+  .chart .now { font-size: 13px; color: var(--muted); }
+  .chart .now b { color: var(--text); font-size: 15px; }
+  .legend { display: flex; gap: 14px; font-size: 12px; color: var(--muted); margin: 4px 0 10px; }
+  .legend span { display: inline-flex; align-items: center; gap: 5px; }
+  .legend i { width: 9px; height: 9px; border-radius: 2px; display: inline-block; }
+  .chartwrap { position: relative; cursor: crosshair; }
+  svg { width: 100%; height: 80px; display: block; }
+  .crosshair { position: absolute; top: 0; bottom: 0; width: 1px; background: var(--muted);
+               opacity: 0; pointer-events: none; transition: opacity .1s; }
+  .axis { fill: var(--muted2); font-size: 10px; }
+  .note { font-size: 12px; color: var(--muted); margin-top: 8px; }
+  .note.warn { color: var(--warn); }
+  .empty { color: var(--muted); text-align: center; padding: 50px 0; }
+  .foot { color: var(--muted); font-size: 12px; margin-top: 20px; }
+
+  #tt { position: fixed; z-index: 1000; background: var(--panel); border: 1px solid var(--line);
+        border-radius: 8px; padding: 8px 12px; font-size: 12px; pointer-events: none; opacity: 0;
+        transition: opacity .1s; box-shadow: 0 4px 16px rgba(0,0,0,.4); }
+  #tt .tt-time { color: var(--muted); margin-bottom: 4px; }
+  #tt .tt-row { display: flex; align-items: center; gap: 6px; white-space: nowrap; }
+  #tt .tt-row i { width: 8px; height: 8px; border-radius: 2px; display: inline-block; flex: none; }
+</style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="top">
+      <div>
+        <div class="crumb"><a href="/">Live Flow</a><span class="sep">/</span><span class="here">Capacity Dashboard</span></div>
+        <h1>How the server has handled load</h1>
+      </div>
+      <div class="pill ok" id="statusPill"><span class="dot"></span><span id="statusText">Loading...</span></div>
+    </div>
+
+    <div class="kpis" id="kpis"></div>
+    <div class="grid" id="charts"><div class="empty">Loading...</div></div>
+    <div class="foot" id="foot"></div>
+  </div>
+  <div id="tt"></div>
+
+<script>
+// Everything below runs in the viewer's browser - drawing a chart from data
+// that already exists costs the server nothing beyond serving one small
+// text file, same as any other static asset.
+
+const CIRCUIT_MBPS = 306;
+const registry = {};   // chart id -> data needed to answer a hover
+
+function fmtTime(t) {
+  return new Date(t * 1000).toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit', second: '2-digit' });
+}
+
+// GB below 1000, TB above - the streams disk went from ~180 GB to 23 TB in
+// one step today, and "22907 GB" is a much worse way to read that than "22.4 TB".
+function fmtGB(gb) {
+  if (gb >= 1000) return (gb / 1024).toFixed(1) + ' TB';
+  return gb.toFixed(0) + ' GB';
+}
+
+function buildChart(id, series, opts) {
+  const w = 640, h = 78, pad = 6;
+  const all = series.flatMap(s => s.points);
+  if (all.length < 2) { delete registry[id]; return '<div class="empty" style="padding:20px 0">Not enough data yet.</div>'; }
+  const xs = all.map(p => p.x);
+  const xMin = Math.min(...xs), xMax = Math.max(...xs);
+  const yVals = all.map(p => p.y);
+  const yMin = opts.yMin !== undefined ? opts.yMin : Math.min(...yVals);
+  const yMax = Math.max(opts.yMaxFloor || 0, ...yVals, yMin + 1);
+  registry[id] = { series, xMin, xMax, yMin, yMax, unit: opts.unit || '', fmt: opts.fmt };
+
+  const sx = x => pad + (w - 2*pad) * (xMax === xMin ? 0 : (x - xMin) / (xMax - xMin));
+  const sy = y => (h - pad) - (h - 2*pad) * (y - yMin) / (yMax - yMin);
+
+  let svg = '';
+  series.forEach((s, i) => {
+    if (s.points.length < 2) return;
+    const path = s.points.map((p, j) => (j === 0 ? 'M' : 'L') + sx(p.x).toFixed(1) + ',' + sy(p.y).toFixed(1)).join(' ');
+    if (i === 0) {
+      const area = path + ` L${sx(s.points[s.points.length-1].x).toFixed(1)},${h-pad} L${sx(s.points[0].x).toFixed(1)},${h-pad} Z`;
+      svg += `<path d="${area}" fill="${s.color}" opacity="0.10"></path>`;
+    }
+    svg += `<path d="${path}" fill="none" stroke="${s.color}" stroke-width="2"></path>`;
+  });
+
+  return `<div class="chartwrap" data-chart="${id}">
+      <svg viewBox="0 0 ${w} ${h}" preserveAspectRatio="none">${svg}</svg>
+      <div class="crosshair"></div>
+    </div>
+    <div style="display:flex;justify-content:space-between" class="axis">
+      <span>${fmtTime(xMin)}</span><span>${fmtTime(xMax)}</span>
+    </div>`;
+}
+
+function rateSeries(rows, field, scale) {
+  const out = [];
+  for (let i = 1; i < rows.length; i++) {
+    const dt = rows[i].epoch - rows[i-1].epoch;
+    if (dt <= 0) continue;
+    const d = Math.max(0, rows[i][field] - rows[i-1][field]);
+    out.push({ x: rows[i].epoch, y: d / dt * scale });
+  }
+  return out;
+}
+
+// One shared tooltip, one delegated listener - chart cards get replaced
+// every 5 seconds, but the #charts container itself never does, so this
+// keeps working across every refresh without re-attaching anything.
+const chartsEl = document.getElementById('charts');
+const tt = document.getElementById('tt');
+chartsEl.addEventListener('mousemove', e => {
+  const wrap = e.target.closest('.chartwrap');
+  document.querySelectorAll('.crosshair').forEach(c => c.style.opacity = 0);
+  if (!wrap) { tt.style.opacity = 0; return; }
+  const info = registry[wrap.dataset.chart];
+  if (!info) { tt.style.opacity = 0; return; }
+
+  const rect = wrap.getBoundingClientRect();
+  const frac = Math.min(1, Math.max(0, (e.clientX - rect.left) / rect.width));
+  const targetX = info.xMin + frac * (info.xMax - info.xMin);
+
+  const ref = info.series.reduce((a, b) => a.points.length >= b.points.length ? a : b);
+  let nearestX = null, bestDt = Infinity;
+  ref.points.forEach(p => { const dt = Math.abs(p.x - targetX); if (dt < bestDt) { bestDt = dt; nearestX = p.x; } });
+  if (nearestX === null) return;
+
+  const crosshair = wrap.querySelector('.crosshair');
+  crosshair.style.left = (frac * 100) + '%';
+  crosshair.style.opacity = 1;
+
+  let html = `<div class="tt-time">${fmtTime(nearestX)}</div>`;
+  info.series.forEach(s => {
+    if (!s.points.length) return;
+    const pt = s.points.reduce((a, b) => Math.abs(a.x - nearestX) < Math.abs(b.x - nearestX) ? a : b);
+    const valStr = info.fmt ? info.fmt(pt.y) : (pt.y.toFixed(1) + info.unit);
+    html += `<div class="tt-row"><i style="background:${s.color}"></i>${s.label ? s.label + ': ' : ''}<b>${valStr}</b></div>`;
+  });
+  tt.innerHTML = html;
+  tt.style.opacity = 1;
+  const ttW = 180;
+  tt.style.left = Math.min(e.clientX + 14, window.innerWidth - ttW) + 'px';
+  tt.style.top = Math.max(e.clientY - 10, 10) + 'px';
+});
+chartsEl.addEventListener('mouseleave', () => {
+  tt.style.opacity = 0;
+  document.querySelectorAll('.crosshair').forEach(c => c.style.opacity = 0);
+});
+
+function loadAndRender() {
+  fetch('/streams/history.csv?_=' + Date.now())
+    .then(r => { if (!r.ok) throw new Error('no history yet'); return r.text(); })
+    .then(text => {
+      const lines = text.trim().split('\n');
+      const cols = lines[0].split(',');
+      const rows = lines.slice(1).filter(Boolean).map(l => {
+        const v = l.split(',').map(Number);
+        const o = {}; cols.forEach((c, i) => o[c] = v[i]);
+        return o;
+      });
+      if (rows.length < 2) {
+        document.getElementById('charts').innerHTML = '<div class="empty">Collecting the first few samples - check back shortly.</div>';
+        return;
+      }
+
+      const last = rows[rows.length - 1];
+
+      const streamPts = rows.map(r => ({ x: r.epoch, y: r.streams }));
+      const netIn = rateSeries(rows, 'rx_bytes', 8 / 1e6);
+      const netOut = rateSeries(rows, 'tx_bytes', 8 / 1e6);
+      // A plain count of events across the visible window - last reading
+      // minus first, on the raw cumulative counters. Summing the per-5-
+      // second rates instead (what this used to do) compounds into a
+      // meaningless number once there are more than a few samples, since
+      // each rate is itself already "events per second".
+      const first = rows[0];
+      const dropTotal = Math.max(0, last.rx_dropped - first.rx_dropped)
+                       + Math.max(0, last.tx_dropped - first.tx_dropped)
+                       + Math.max(0, last.rx_errors - first.rx_errors)
+                       + Math.max(0, last.tx_errors - first.tx_errors);
+      // cpu_all_pct is a real reading off /proc/stat - falls back to the
+      // load-average estimate only for rows recorded before this column
+      // existed, so old history doesn't just vanish from the chart.
+      const cpuPts = rows.map(r => ({ x: r.epoch, y: r.cpu_all_pct !== undefined ? r.cpu_all_pct : (r.nproc ? r.load / r.nproc * 100 : 0) }));
+      const coreP = rows.map(r => ({ x: r.epoch, y: r.busiest_core_pct || 0 }));
+      const ramPct = rows.map(r => ({ x: r.epoch, y: r.mem_total_kb ? (100 - r.mem_avail_kb / r.mem_total_kb * 100) : 0 }));
+      const swapPct = rows.map(r => ({ x: r.epoch, y: r.swap_total_kb ? (100 - r.swap_free_kb / r.swap_total_kb * 100) : 0 }));
+      const diskFree = rows.map(r => ({ x: r.epoch, y: r.disk_avail_kb / 1048576 }));
+      const diskRead = rateSeries(rows, 'disk_sectors_read', 512 / 1e6);
+      const diskWrite = rateSeries(rows, 'disk_sectors_written', 512 / 1e6);
+
+      const lastIn = netIn.length ? netIn[netIn.length-1].y : 0;
+      const lastOut = netOut.length ? netOut[netOut.length-1].y : 0;
+      const lastNet = Math.max(lastIn, lastOut);
+      const lastRam = ramPct[ramPct.length-1].y;
+      const lastCpu = cpuPts[cpuPts.length-1].y;
+      const lastDiskFree = diskFree[diskFree.length-1].y;
+      const lastWrite = diskWrite.length ? diskWrite[diskWrite.length-1].y : 0;
+      const lastRead = diskRead.length ? diskRead[diskRead.length-1].y : 0;
+
+      const pill = document.getElementById('statusPill');
+      const pillText = document.getElementById('statusText');
+      if (last.stalled > 0) {
+        pill.className = 'pill bad'; pillText.textContent = `${last.stalled} stream(s) stalled`;
+      } else if (lastNet >= CIRCUIT_MBPS * 0.85 || lastDiskFree < 20 || dropTotal > 50) {
+        pill.className = 'pill warn'; pillText.textContent = 'Approaching a limit';
+      } else {
+        pill.className = 'pill ok'; pillText.textContent = 'All clear';
+      }
+
+      document.getElementById('kpis').innerHTML = `
+        <div class="kpi"><div class="label">Streams live</div><div class="value">${last.streams}</div></div>
+        <div class="kpi"><div class="label">Bandwidth</div><div class="value">${lastIn.toFixed(0)}<small> in</small> / ${lastOut.toFixed(0)}<small> out Mbps</small></div></div>
+        <div class="kpi"><div class="label">Processor used</div><div class="value">${lastCpu.toFixed(0)}<small>%</small></div><div class="sub">${(lastCpu / 100 * (last.nproc || 0)).toFixed(1)} of ${last.nproc || 0} cores</div></div>
+        <div class="kpi"><div class="label">Storage free</div><div class="value">${fmtGB(lastDiskFree)}</div></div>
+        <div class="kpi"><div class="label">RAM used</div><div class="value">${lastRam.toFixed(0)}<small>%</small></div></div>`;
+
+      const card = (title, nowHtml, legendHtml, chartHtml, noteHtml) => `
+        <div class="chart">
+          <div class="head"><h2>${title}</h2><div class="now">${nowHtml}</div></div>
+          ${legendHtml ? `<div class="legend">${legendHtml}</div>` : ''}
+          ${chartHtml}
+          ${noteHtml || ''}
+        </div>`;
+
+      document.getElementById('charts').innerHTML =
+        card('Streams running',
+          `<b>${last.streams}</b> live` + (last.stalled ? `, <span style="color:var(--bad)">${last.stalled} stalled</span>` : ''),
+          '',
+          buildChart('streams', [{ label: 'Streams', color: 'var(--ok)', points: streamPts }], { yMin: 0, unit: '' }),
+          last.stalled ? '<div class="note warn">A stalled stream has stopped producing fresh video, even though it is still connected.</div>' : '')
+
+        + card('Bandwidth usage',
+          `<b>${lastIn.toFixed(0)}</b> Mbps in &middot; <b>${lastOut.toFixed(0)}</b> Mbps out`,
+          `<span><i style="background:var(--c1)"></i>Ingest (broadcasters)</span><span><i style="background:var(--c2)"></i>Egress (viewers)</span>`,
+          buildChart('bandwidth', [{ label: 'In', color: 'var(--c1)', points: netIn }, { label: 'Out', color: 'var(--c2)', points: netOut }], { yMin: 0, yMaxFloor: CIRCUIT_MBPS, unit: ' Mbps' }),
+          (dropTotal > 50 ? `<div class="note warn">${dropTotal} dropped/error packets seen - worth a look, though a handful can happen normally (a killed connection, a brief hiccup).</div>` : ''))
+
+        + card('Processor used',
+          `<b>${lastCpu.toFixed(0)}%</b> overall`,
+          `<span><i style="background:var(--c3)"></i>Overall</span><span><i style="background:var(--c4)"></i>Busiest core</span>`,
+          buildChart('cpu', [{ label: 'Overall', color: 'var(--c3)', points: cpuPts }, { label: 'Busiest core', color: 'var(--c4)', points: coreP }], { yMin: 0, yMaxFloor: 100, unit: '%' }))
+
+        + card('RAM used',
+          `<b>${lastRam.toFixed(0)}%</b> RAM`,
+          `<span><i style="background:var(--c5)"></i>RAM</span><span><i style="background:var(--c6)"></i>Swap</span>`,
+          buildChart('ram', [{ label: 'RAM', color: 'var(--c5)', points: ramPct }, { label: 'Swap', color: 'var(--c6)', points: swapPct }], { yMin: 0, yMaxFloor: 100, unit: '%' }),
+          '<div class="note">Swap above 0% means the machine has run short of real memory - worth watching as streams run longer.</div>')
+
+        + card('Storage space free',
+          `<b>${fmtGB(lastDiskFree)}</b>`,
+          '',
+          buildChart('disk-free', [{ label: 'Free', color: 'var(--c7)', points: diskFree }], { yMin: 0, fmt: fmtGB }))
+
+        + card('Disk write / read speed',
+          `<b>${lastWrite.toFixed(0)}</b> MB/s writing`,
+          `<span><i style="background:var(--c9)"></i>Write</span><span><i style="background:var(--c8)"></i>Read</span>`,
+          buildChart('disk-io', [{ label: 'Write', color: 'var(--c9)', points: diskWrite }, { label: 'Read', color: 'var(--c8)', points: diskRead }], { yMin: 0, unit: ' MB/s' }),
+          lastRead < 0.5 ? '<div class="note">Read normally stays near zero here: a segment is watched within seconds of being written, so it is served from memory, not read back off the disk.</div>' : '');
+
+      document.getElementById('foot').textContent =
+        rows.length + ' samples, about one every 5 seconds. Refreshes automatically. Hover any chart for exact values.';
+    })
+    .catch(() => {
+      document.getElementById('charts').innerHTML = '<div class="empty">No history yet - this fills in once the test has been running a few minutes.</div>';
+    });
+}
+
+loadAndRender();
+setInterval(loadAndRender, 5000);
+</script>
+</body>
+</html>

@@ -1,0 +1,202 @@
+<!doctype html>
+<!--
+  Test player served by the container's own nginx.
+
+  Why this exists instead of using an online HLS player: the public HLS URL is
+  plain http, and every online player page is served over https. Browsers
+  refuse to load http video into an https page (mixed content), so those
+  players fail even when the stream is perfectly fine. This page is served
+  over http from the same host as the video, so there is no mixed content.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Live Stream Test Player</title>
+<style>
+  :root {
+    --bg: #0f1115; --panel: #171a21; --line: #262b36;
+    --text: #e6e9ef; --muted: #9aa3b2; --accent: #4ade80; --warn: #fbbf24; --err: #f87171;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    padding: 24px;
+  }
+  .wrap { max-width: 960px; margin: 0 auto; }
+  .crumb { font-size: 13px; margin-bottom: 8px; }
+  .crumb a { color: var(--muted); text-decoration: none; }
+  .crumb a:hover { color: var(--text); text-decoration: underline; }
+  .crumb .sep { color: #6b7280; margin: 0 6px; }
+  .crumb .here { color: var(--muted); }
+  h1 { font-size: 20px; margin: 0 0 4px; }
+  .sub { color: var(--muted); font-size: 13px; margin-bottom: 20px; }
+  video { width: 100%; background: #000; border-radius: 8px; display: block; }
+  .panel {
+    background: var(--panel); border: 1px solid var(--line);
+    border-radius: 8px; padding: 16px; margin-top: 16px;
+  }
+  label { display: block; font-size: 12px; color: var(--muted); margin-bottom: 6px; }
+  .row { display: flex; gap: 10px; flex-wrap: wrap; align-items: flex-end; }
+  .row > div { flex: 1 1 240px; }
+  input {
+    width: 100%; padding: 9px 11px; border-radius: 6px;
+    border: 1px solid var(--line); background: #0d0f14; color: var(--text);
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px;
+  }
+  button {
+    padding: 9px 18px; border-radius: 6px; border: 0;
+    background: var(--accent); color: #06240f; font-weight: 600;
+    font-size: 14px; cursor: pointer;
+  }
+  button:hover { filter: brightness(1.08); }
+  .status { margin-top: 14px; font-size: 13px; display: flex; align-items: center; gap: 8px; }
+  .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--muted); flex: none; }
+  .dot.live { background: var(--accent); box-shadow: 0 0 0 4px rgba(74,222,128,.15); }
+  .dot.err  { background: var(--err); }
+  .dot.wait { background: var(--warn); }
+  code {
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    background: #0d0f14; padding: 2px 6px; border-radius: 4px;
+    font-size: 12px; color: var(--accent); word-break: break-all;
+  }
+  table { width: 100%; border-collapse: collapse; margin-top: 4px; font-size: 13px; }
+  td { padding: 7px 0; border-bottom: 1px solid var(--line); vertical-align: top; }
+  td:first-child { color: var(--muted); width: 130px; white-space: nowrap; }
+  tr:last-child td { border-bottom: 0; }
+  #log {
+    margin-top: 10px; font-family: ui-monospace, monospace; font-size: 12px;
+    color: var(--muted); max-height: 130px; overflow-y: auto; white-space: pre-wrap;
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <div class="crumb"><a href="/">Live Flow</a><span class="sep">/</span><span class="here">Test Player</span></div>
+  <h1>Live Stream Test Player</h1>
+  <div class="sub">Served from the same address as the video, so nothing is blocked as mixed content.</div>
+
+  <video id="video" controls playsinline muted></video>
+
+  <div class="panel">
+    <div class="row">
+      <div>
+        <label for="url">HLS playlist URL</label>
+        <input id="url" spellcheck="false">
+      </div>
+      <button id="load">Load</button>
+    </div>
+    <div class="status"><span class="dot" id="dot"></span><span id="msg">Idle</span></div>
+    <div id="log"></div>
+  </div>
+
+  <div class="panel">
+    <table>
+      <tr><td>Playback ID</td><td><code id="pid"></code></td></tr>
+      <tr><td>Playlist</td><td><code id="hls"></code></td></tr>
+    </table>
+  </div>
+
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/hls.js@1.5.13/dist/hls.min.js"></script>
+<script>
+(function () {
+  var video = document.getElementById('video');
+  var urlBox = document.getElementById('url');
+  var dot = document.getElementById('dot');
+  var msg = document.getElementById('msg');
+  var logBox = document.getElementById('log');
+  var hls = null;
+
+  // Everything is derived from the address this page was opened on, so the
+  // page keeps working if the server moves or is reached by another name.
+
+  // ?id=<playback id> points the page at one stream, so the watch link
+  // that comes back when a stream is created can be shared as-is. ?url=<full
+  // url> wins over it, for pointing this player at some other server entirely.
+  //
+  // Deliberately the playback id, never the stream key: this page is for
+  // viewers, and the key is the credential that permits broadcasting. It must
+  // not travel in a link that gets forwarded around.
+  var params = new URLSearchParams(location.search);
+  var asset = params.get('id') || 'testasset';
+  var defaultUrl = params.get('url')
+    || location.protocol + '//' + location.host + '/live/poc/' + encodeURIComponent(asset) + '/video.m3u8';
+  urlBox.value = defaultUrl;
+  document.getElementById('hls').textContent = defaultUrl;
+  document.getElementById('pid').textContent = params.get('id') || '(none given)';
+
+  function setState(state, text) {
+    dot.className = 'dot' + (state ? ' ' + state : '');
+    msg.textContent = text;
+  }
+
+  function log(line) {
+    var t = new Date().toLocaleTimeString();
+    logBox.textContent = t + '  ' + line + '\n' + logBox.textContent;
+  }
+
+  function load() {
+    var url = urlBox.value.trim();
+    if (!url) return;
+
+    if (hls) { hls.destroy(); hls = null; }
+    setState('wait', 'Loading playlist…');
+    log('loading ' + url);
+
+    // Safari and iOS play HLS natively and do not need hls.js.
+    if (video.canPlayType('application/vnd.apple.mpegurl') && !window.Hls) {
+      video.src = url;
+      video.play().catch(function () {});
+      setState('live', 'Playing (native HLS)');
+      return;
+    }
+
+    if (!window.Hls || !window.Hls.isSupported()) {
+      setState('err', 'This browser cannot play HLS and hls.js did not load.');
+      return;
+    }
+
+    hls = new Hls({ lowLatencyMode: true, backBufferLength: 60 });
+    hls.loadSource(url);
+    hls.attachMedia(video);
+
+    hls.on(Hls.Events.MANIFEST_PARSED, function (e, data) {
+      var n = data.levels.length;
+      setState('live', 'Playing — ' + n + ' quality level' + (n === 1 ? '' : 's') + ' available');
+      log('manifest parsed: ' + data.levels.map(function (l) { return l.height + 'p'; }).join(', '));
+      video.play().catch(function () { log('autoplay blocked - press play'); });
+    });
+
+    hls.on(Hls.Events.LEVEL_SWITCHED, function (e, data) {
+      var lvl = hls.levels[data.level];
+      if (lvl) log('switched to ' + lvl.height + 'p');
+    });
+
+    hls.on(Hls.Events.ERROR, function (e, data) {
+      if (!data.fatal) return;
+      log('error: ' + data.type + ' / ' + data.details);
+      if (data.type === Hls.ErrorTypes.NETWORK_ERROR) {
+        // The usual cause is simply that nobody is publishing yet, so the
+        // playlist does not exist. Keep retrying rather than giving up.
+        setState('wait', 'Waiting for the stream to start…');
+        setTimeout(function () { if (hls) hls.startLoad(); }, 3000);
+      } else if (data.type === Hls.ErrorTypes.MEDIA_ERROR) {
+        setState('wait', 'Recovering media error…');
+        hls.recoverMediaError();
+      } else {
+        setState('err', 'Fatal: ' + data.details);
+      }
+    });
+  }
+
+  document.getElementById('load').addEventListener('click', load);
+  urlBox.addEventListener('keydown', function (e) { if (e.key === 'Enter') load(); });
+  load();
+})();
+</script>
+</body>
+</html>
