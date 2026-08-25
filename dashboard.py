@@ -3,7 +3,9 @@
 
 Standalone: never calls into the streams app, never called by it. The only
 thing the two agree on is the layout of a stream's directory - an "index"
-file holding its port number, and its HLS files under livestream/.
+file holding its port number, and its HLS files under data/livestream/ (the
+"data" segment is the per-stream disk-cap mount point, not this repo's own
+layout - see titan.py in the streams app).
 """
 from __future__ import annotations
 
@@ -90,7 +92,7 @@ def sample() -> None:
             if not stream_dir.is_dir() or not (stream_dir / "index").exists():
                 continue
             stream_count += 1
-            playlist = stream_dir / "livestream" / "video-720p.m3u8"
+            playlist = stream_dir / "data" / "livestream" / "video-720p.m3u8"
             try:
                 if now - playlist.stat().st_mtime > 15:
                     stalled_count += 1
