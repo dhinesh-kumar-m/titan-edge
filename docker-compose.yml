@@ -6,6 +6,14 @@
 # It serves every stream's HLS files and the test player on port 80. Stream
 # containers come and go underneath it without this being touched, because a
 # stream's key is the name of its directory under /srv/live-flow/streams.
+#
+# name: is pinned rather than left to default to the checkout directory's
+# name. Compose only lets --force-recreate replace a container it believes
+# belongs to its own project, matched by this name - if this repo is ever
+# re-cloned into a differently-named directory, an unpinned project name
+# would silently stop recognising the container it already created, and
+# "up -d" would hit a container_name conflict instead of just replacing it.
+name: titan-edge
 
 services:
   edge:
